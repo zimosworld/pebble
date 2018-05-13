@@ -17,7 +17,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/letsencrypt/pebble/cmd"
+	"github.com/zimosworld/pebble/cmd"
 	"gopkg.in/square/go-jose.v2"
 )
 

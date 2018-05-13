@@ -21,8 +21,8 @@ import (
 	"time"
 
 	"github.com/jmhodges/clock"
-	"github.com/letsencrypt/pebble/acme"
-	"github.com/letsencrypt/pebble/core"
+	"github.com/zimosworld/pebble/acme"
+	"github.com/zimosworld/pebble/core"
 )
 
 const (

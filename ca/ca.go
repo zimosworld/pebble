@@ -7,15 +7,17 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"log"
 	"math"
 	"math/big"
 	"time"
+	"io/ioutil"
 
-	"github.com/letsencrypt/pebble/acme"
-	"github.com/letsencrypt/pebble/core"
-	"github.com/letsencrypt/pebble/db"
+	"github.com/zimosworld/pebble/acme"
+	"github.com/zimosworld/pebble/core"
+	"github.com/zimosworld/pebble/db"
 )
 
 const (
@@ -54,6 +56,26 @@ func makeKey() (*rsa.PrivateKey, error) {
 		return nil, err
 	}
 	return key, nil
+}
+
+func (ca *CAImpl) getKey(keyFile string) (*rsa.PrivateKey, error) {
+
+    kf, e := ioutil.ReadFile(keyFile)
+    if e != nil {
+        ca.log.Printf("kfload:", e.Error())
+        return nil, e
+    }
+
+    kpb, kr := pem.Decode(kf)
+    fmt.Println(string(kr))
+
+    key, e := x509.ParsePKCS1PrivateKey(kpb.Bytes)
+    if e != nil {
+        ca.log.Printf("parsekey:", e.Error())
+        return nil, e
+    }
+
+    return key, nil
 }
 
 func (ca *CAImpl) makeRootCert(
@@ -109,39 +131,80 @@ func (ca *CAImpl) makeRootCert(
 	return newCert, nil
 }
 
-func (ca *CAImpl) newRootIssuer() error {
-	// Make a root private key
-	rk, err := makeKey()
-	if err != nil {
-		return err
-	}
-	// Make a self-signed root certificate
-	rc, err := ca.makeRootCert(rk, rootCAPrefix, nil)
-	if err != nil {
-		return err
-	}
+func (ca *CAImpl) getRootCert(certFile string) (*core.Certificate, error) {
+    cf, e := ioutil.ReadFile(certFile)
+    if e != nil {
+        ca.log.Printf("cfload:", e.Error())
+        return nil, e
+    }
 
-	ca.root = &issuer{
-		key:  rk,
-		cert: rc,
-	}
-	ca.log.Printf("Generated new root issuer with serial %s\n", rc.ID)
-	return nil
+    cpb, cr := pem.Decode(cf)
+    fmt.Println(string(cr))
+
+    crt, e := x509.ParseCertificate(cpb.Bytes)
+    if e != nil {
+        ca.log.Printf("parsex509:", e.Error())
+        return nil, e
+    }
+
+    hexSerial := hex.EncodeToString(crt.SerialNumber.Bytes())
+    cert := &core.Certificate{
+        ID:   hexSerial,
+        Cert: crt,
+        DER:  cf,
+    }
+
+    return cert, nil
 }
 
-func (ca *CAImpl) newIntermediateIssuer() error {
-	if ca.root == nil {
-		return fmt.Errorf("newIntermediateIssuer() called before newRootIssuer()")
+func (ca *CAImpl) LoadX509KeyPair(certFile, keyFile string) (*core.Certificate, *rsa.PrivateKey, error) {
+    cf, e := ioutil.ReadFile(certFile)
+    if e != nil {
+        ca.log.Printf("cfload:", e.Error())
+        return nil, nil, e
+    }
+
+    kf, e := ioutil.ReadFile(keyFile)
+    if e != nil {
+        ca.log.Printf("kfload:", e.Error())
+        return nil, nil, e
+    }
+    cpb, cr := pem.Decode(cf)
+    fmt.Println(string(cr))
+    kpb, kr := pem.Decode(kf)
+    fmt.Println(string(kr))
+
+    crt, e := x509.ParseCertificate(cpb.Bytes)
+    if e != nil {
+        ca.log.Printf("parsex509:", e.Error())
+        return nil, nil, e
+    }
+
+    hexSerial := hex.EncodeToString(crt.SerialNumber.Bytes())
+	cert := &core.Certificate{
+		ID:   hexSerial,
+		Cert: crt,
+		DER:  cf,
 	}
 
+    key, e := x509.ParsePKCS1PrivateKey(kpb.Bytes)
+    if e != nil {
+        ca.log.Printf("parsekey:", e.Error())
+        return nil, nil, e
+    }
+    return cert, key, nil
+}
+
+func (ca *CAImpl) getIssuer() error {
+
 	// Make an intermediate private key
-	ik, err := makeKey()
+	ik, err := ca.getKey("/var/pebble/certs/ca/key.pem")
 	if err != nil {
 		return err
 	}
 
 	// Make an intermediate certificate with the root issuer
-	ic, err := ca.makeRootCert(ik, intermediateCAPrefix, ca.root)
+	ic, err := ca.getRootCert("/var/pebble/certs/ca/cert.pem")
 	if err != nil {
 		return err
 	}
@@ -209,11 +272,7 @@ func New(log *log.Logger, db *db.MemoryStore) *CAImpl {
 		log: log,
 		db:  db,
 	}
-	err := ca.newRootIssuer()
-	if err != nil {
-		panic(fmt.Sprintf("Error creating new root issuer: %s", err.Error()))
-	}
-	err = ca.newIntermediateIssuer()
+	err := ca.getIssuer()
 	if err != nil {
 		panic(fmt.Sprintf("Error creating new intermediate issuer: %s", err.Error()))
 	}

@@ -7,11 +7,11 @@ import (
 	"os"
 
 	"github.com/jmhodges/clock"
-	"github.com/letsencrypt/pebble/ca"
-	"github.com/letsencrypt/pebble/cmd"
-	"github.com/letsencrypt/pebble/db"
-	"github.com/letsencrypt/pebble/va"
-	"github.com/letsencrypt/pebble/wfe"
+	"github.com/zimosworld/pebble/ca"
+	"github.com/zimosworld/pebble/cmd"
+	"github.com/zimosworld/pebble/db"
+	"github.com/zimosworld/pebble/va"
+	"github.com/zimosworld/pebble/wfe"
 )
 
 type config struct {
