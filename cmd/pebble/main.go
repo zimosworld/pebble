@@ -14,6 +14,10 @@ import (
 	"github.com/zimosworld/pebble/wfe"
 )
 
+const (
+    tlsDisabled = "PEBBLE_TLS_DISABLED"
+)
+
 type config struct {
 	Pebble struct {
 		ListenAddress string
@@ -54,11 +58,22 @@ func main() {
 	wfe := wfe.New(logger, clk, db, va, ca, *strictMode)
 	muxHandler := wfe.Handler()
 
-	logger.Printf("Pebble running, listening on: %s\n", c.Pebble.ListenAddress)
-	err = http.ListenAndServeTLS(
-		c.Pebble.ListenAddress,
-		c.Pebble.Certificate,
-		c.Pebble.PrivateKey,
-		muxHandler)
+	tlsDisabled := os.Getenv(tlsDisabled)
+
+    logger.Printf("Pebble running, listening on: %s\n", c.Pebble.ListenAddress)
+
+    switch tlsDisabled {
+	case "1", "true", "True", "TRUE":
+	    err = http.ListenAndServe(
+                c.Pebble.ListenAddress,
+                muxHandler)
+	default:
+	    err = http.ListenAndServeTLS(
+        		c.Pebble.ListenAddress,
+        		c.Pebble.Certificate,
+        		c.Pebble.PrivateKey,
+        		muxHandler)
+	}
+
 	cmd.FailOnError(err, "Calling ListenAndServeTLS()")
 }
