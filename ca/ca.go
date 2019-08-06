@@ -12,6 +12,7 @@ import (
 	"log"
 	"math"
 	"math/big"
+	"net"
 	"time"
 	"io/ioutil"
 
@@ -26,9 +27,14 @@ const (
 )
 
 type CAImpl struct {
-	log *log.Logger
-	db  *db.MemoryStore
+	log              *log.Logger
+	db               *db.MemoryStore
+	ocspResponderURL string
 
+	chains []*chain
+}
+
+type chain struct {
 	root         *issuer
 	intermediate *issuer
 }
@@ -95,17 +101,20 @@ func (ca *CAImpl) makeRootCert(
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
-		IsCA: true,
+		IsCA:                  true,
 	}
 
 	var signerKey crypto.Signer
-	if signer != nil && signer.key != nil {
+	var parent *x509.Certificate
+	if signer != nil && signer.key != nil && signer.cert != nil && signer.cert.Cert != nil {
 		signerKey = signer.key
+		parent = signer.cert.Cert
 	} else {
 		signerKey = subjectKey
+		parent = template
 	}
 
-	der, err := x509.CreateCertificate(rand.Reader, template, template, subjectKey.Public(), signerKey)
+	der, err := x509.CreateCertificate(rand.Reader, template, parent, subjectKey.Public(), signerKey)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +131,8 @@ func (ca *CAImpl) makeRootCert(
 		DER:  der,
 	}
 	if signer != nil && signer.cert != nil {
-		newCert.Issuer = signer.cert
+		newCert.Issuers = make([]*core.Certificate, 1)
+		newCert.Issuers[0] = signer.cert
 	}
 	_, err = ca.db.AddCertificate(newCert)
 	if err != nil {
@@ -206,32 +216,49 @@ func (ca *CAImpl) getIssuer() error {
 	// Make an intermediate certificate with the root issuer
 	ic, err := ca.getRootCert("/var/pebble/certs/ca/cert.pem")
 	if err != nil {
-		return err
-	}
-	ca.intermediate = &issuer{
-		key:  ik,
-		cert: ic,
+		return nil, err
 	}
 	ca.log.Printf("Generated new intermediate issuer with serial %s\n", ic.ID)
-	return nil
+	return &issuer{
+		key:  ik,
+		cert: ic,
+	}, nil
 }
 
-func (ca *CAImpl) newCertificate(domains []string, key crypto.PublicKey) (*core.Certificate, error) {
+func (ca *CAImpl) newChain(ik crypto.Signer) *chain {
+	root, err := ca.newRootIssuer()
+	if err != nil {
+		panic(fmt.Sprintf("Error creating new root issuer: %s", err.Error()))
+	}
+	intermediate, err := ca.newIntermediateIssuer(root, ik)
+	if err != nil {
+		panic(fmt.Sprintf("Error creating new intermediate issuer: %s", err.Error()))
+	}
+	return &chain{
+		root:         root,
+		intermediate: intermediate,
+	}
+}
+
+func (ca *CAImpl) newCertificate(domains []string, ips []net.IP, key crypto.PublicKey, accountID string) (*core.Certificate, error) {
 	var cn string
 	if len(domains) > 0 {
 		cn = domains[0]
+	} else if len(ips) > 0 {
+		cn = ips[0].String()
 	} else {
-		return nil, fmt.Errorf("must specify at least one domain name")
+		return nil, fmt.Errorf("must specify at least one domain name or IP address")
 	}
 
-	issuer := ca.intermediate
+	issuer := ca.chains[0].intermediate
 	if issuer == nil || issuer.cert == nil {
 		return nil, fmt.Errorf("cannot sign certificate - nil issuer")
 	}
 
 	serial := makeSerial()
 	template := &x509.Certificate{
-		DNSNames: domains,
+		DNSNames:    domains,
+		IPAddresses: ips,
 		Subject: pkix.Name{
 			CommonName: cn,
 		},
@@ -242,8 +269,13 @@ func (ca *CAImpl) newCertificate(domains []string, key crypto.PublicKey) (*core.
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
-		IsCA: false,
+		IsCA:                  false,
 	}
+
+	if ca.ocspResponderURL != "" {
+		template.OCSPServer = []string{ca.ocspResponderURL}
+	}
+
 	der, err := x509.CreateCertificate(rand.Reader, template, issuer.cert.Cert, key, issuer.key)
 	if err != nil {
 		return nil, err
@@ -253,12 +285,18 @@ func (ca *CAImpl) newCertificate(domains []string, key crypto.PublicKey) (*core.
 		return nil, err
 	}
 
+	issuers := make([]*core.Certificate, len(ca.chains))
+	for i := 0; i < len(ca.chains); i++ {
+		issuers[i] = ca.chains[i].intermediate.cert
+	}
+
 	hexSerial := hex.EncodeToString(cert.SerialNumber.Bytes())
 	newCert := &core.Certificate{
-		ID:     hexSerial,
-		Cert:   cert,
-		DER:    der,
-		Issuer: issuer.cert,
+		ID:        hexSerial,
+		AccountID: accountID,
+		Cert:      cert,
+		DER:       der,
+		Issuers:   issuers,
 	}
 	_, err = ca.db.AddCertificate(newCert)
 	if err != nil {
@@ -267,32 +305,34 @@ func (ca *CAImpl) newCertificate(domains []string, key crypto.PublicKey) (*core.
 	return newCert, nil
 }
 
-func New(log *log.Logger, db *db.MemoryStore) *CAImpl {
+func New(log *log.Logger, db *db.MemoryStore, ocspResponderURL string, alternateRoots int) *CAImpl {
 	ca := &CAImpl{
 		log: log,
 		db:  db,
 	}
 	err := ca.getIssuer()
 	if err != nil {
-		panic(fmt.Sprintf("Error creating new intermediate issuer: %s", err.Error()))
+		panic(fmt.Sprintf("Error creating new intermediate private key: %s", err.Error()))
+	}
+	ca.chains = make([]*chain, 1+alternateRoots)
+	for i := 0; i < len(ca.chains); i++ {
+		ca.chains[i] = ca.newChain(ik)
 	}
 	return ca
 }
 
 func (ca *CAImpl) CompleteOrder(order *core.Order) {
-	// Lock the order for writing
-	order.Lock()
-	// If the order isn't pending, produce an error and immediately unlock
-	if order.Status != acme.StatusPending {
-		ca.log.Printf("Error: Asked to complete order %s is not status pending, was status %s",
-			order.ID, order.Status)
-		order.Unlock()
+	// Lock the order for reading
+	order.RLock()
+	// If the order isn't set as beganProcessing produce an error and immediately unlock
+	if !order.BeganProcessing {
+		ca.log.Printf("Error: Asked to complete order %s which had false beganProcessing.",
+			order.ID)
+		order.RUnlock()
 		return
 	}
-	// Otherwise update the order to be in a processing state
-	order.Status = acme.StatusProcessing
 	// Unlock the order again
-	order.Unlock()
+	order.RUnlock()
 
 	// Check the authorizations - this is done by the VA before calling
 	// CompleteOrder but we do it again for robustness sake.
@@ -307,17 +347,68 @@ func (ca *CAImpl) CompleteOrder(order *core.Order) {
 
 	// issue a certificate for the csr
 	csr := order.ParsedCSR
-	cert, err := ca.newCertificate(csr.DNSNames, csr.PublicKey)
+	cert, err := ca.newCertificate(csr.DNSNames, csr.IPAddresses, csr.PublicKey, order.AccountID)
 	if err != nil {
 		ca.log.Printf("Error: unable to issue order: %s", err.Error())
 		return
 	}
 	ca.log.Printf("Issued certificate serial %s for order %s\n", cert.ID, order.ID)
 
-	// Lock and update the order to valid status and store a cert ID for the wfe
-	// to use to render the certificate URL for the order
+	// Lock and update the order to store the issued certificate
 	order.Lock()
-	order.Status = acme.StatusValid
 	order.CertificateObject = cert
 	order.Unlock()
+}
+
+func (ca *CAImpl) GetNumberOfRootCerts() int {
+	return len(ca.chains)
+}
+
+func (ca *CAImpl) getChain(no int) *chain {
+	if 0 <= no && no < len(ca.chains) {
+		return ca.chains[no]
+	}
+	return nil
+}
+
+func (ca *CAImpl) GetRootCert(no int) *core.Certificate {
+	chain := ca.getChain(no)
+	if chain == nil {
+		return nil
+	}
+	return chain.root.cert
+}
+
+func (ca *CAImpl) GetRootKey(no int) *rsa.PrivateKey {
+	chain := ca.getChain(no)
+	if chain == nil {
+		return nil
+	}
+
+	switch key := chain.root.key.(type) {
+	case *rsa.PrivateKey:
+		return key
+	}
+	return nil
+}
+
+func (ca *CAImpl) GetIntermediateCert(no int) *core.Certificate {
+	chain := ca.getChain(no)
+	if chain == nil {
+		return nil
+	}
+	return chain.intermediate.cert
+}
+
+func (ca *CAImpl) GetIntermediateKey(no int) *rsa.PrivateKey {
+	chain := ca.getChain(no)
+	if chain == nil {
+		return nil
+	}
+
+	switch key := chain.intermediate.key.(type) {
+	case *rsa.PrivateKey:
+		return key
+	}
+	return nil
 }

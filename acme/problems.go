@@ -8,7 +8,7 @@ import (
 const (
 	errNS                  = "urn:ietf:params:acme:error:"
 	serverInternalErr      = errNS + "serverInternal"
-	malformedErr           = errNS + "malformedRequest"
+	malformedErr           = errNS + "malformed"
 	badNonceErr            = errNS + "badNonce"
 	agreementReqErr        = errNS + "agreementRequired"
 	connectionErr          = errNS + "connection"
@@ -16,6 +16,10 @@ const (
 	invalidContactErr      = errNS + "invalidContact"
 	unsupportedContactErr  = errNS + "unsupportedContact"
 	accountDoesNotExistErr = errNS + "accountDoesNotExist"
+	badRevocationReasonErr = errNS + "badRevocationReason"
+	alreadyRevokedErr      = errNS + "alreadyRevoked"
+	orderNotReadyErr       = errNS + "orderNotReady"
+	badPublicKeyErr        = errNS + "badPublicKey"
 )
 
 type ProblemDetails struct {
@@ -129,5 +133,37 @@ func UnsupportedMediaTypeProblem(detail string) *ProblemDetails {
 		Type:       malformedErr,
 		Detail:     detail,
 		HTTPStatus: http.StatusUnsupportedMediaType,
+	}
+}
+
+func BadRevocationReasonProblem(detail string) *ProblemDetails {
+	return &ProblemDetails{
+		Type:       badRevocationReasonErr,
+		Detail:     detail,
+		HTTPStatus: http.StatusBadRequest,
+	}
+}
+
+func AlreadyRevokedProblem(detail string) *ProblemDetails {
+	return &ProblemDetails{
+		Type:       alreadyRevokedErr,
+		Detail:     detail,
+		HTTPStatus: http.StatusBadRequest,
+	}
+}
+
+func OrderNotReadyProblem(detail string) *ProblemDetails {
+	return &ProblemDetails{
+		Type:       orderNotReadyErr,
+		Detail:     detail,
+		HTTPStatus: http.StatusForbidden,
+	}
+}
+
+func BadPublicKeyProblem(detail string) *ProblemDetails {
+	return &ProblemDetails{
+		Type:       badPublicKeyErr,
+		Detail:     detail,
+		HTTPStatus: http.StatusBadRequest,
 	}
 }

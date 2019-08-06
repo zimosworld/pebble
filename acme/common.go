@@ -7,10 +7,13 @@ const (
 	StatusPending     = "pending"
 	StatusInvalid     = "invalid"
 	StatusValid       = "valid"
+	StatusExpired     = "expired"
 	StatusProcessing  = "processing"
+	StatusReady       = "ready"
 	StatusDeactivated = "deactivated"
 
 	IdentifierDNS = "dns"
+	IdentifierIP  = "ip"
 
 	ChallengeHTTP01    = "http-01"
 	ChallengeTLSALPN01 = "tls-alpn-01"
@@ -26,30 +29,35 @@ type Identifier struct {
 	Value string `json:"value"`
 }
 
+func (ident Identifier) Equals(other Identifier) bool {
+	return ident.Type == other.Type && ident.Value == other.Value
+}
+
 type Account struct {
 	Status  string   `json:"status"`
-	Contact []string `json:"contact"`
+	Contact []string `json:"contact,omitempty"`
 	Orders  string   `json:"orders,omitempty"`
 }
 
 // An Order is created to request issuance for a CSR
 type Order struct {
-	Status         string       `json:"status"`
-	Expires        string       `json:"expires"`
-	Identifiers    []Identifier `json:"identifiers,omitempty"`
-	Finalize       string       `json:"finalize"`
-	NotBefore      string       `json:"notBefore,omitempty"`
-	NotAfter       string       `json:"notAfter,omitempty"`
-	Authorizations []string     `json:"authorizations"`
-	Certificate    string       `json:"certificate,omitempty"`
+	Status         string          `json:"status"`
+	Error          *ProblemDetails `json:"error,omitempty"`
+	Expires        string          `json:"expires"`
+	Identifiers    []Identifier    `json:"identifiers,omitempty"`
+	Finalize       string          `json:"finalize"`
+	NotBefore      string          `json:"notBefore,omitempty"`
+	NotAfter       string          `json:"notAfter,omitempty"`
+	Authorizations []string        `json:"authorizations"`
+	Certificate    string          `json:"certificate,omitempty"`
 }
 
 // An Authorization is created for each identifier in an order
 type Authorization struct {
-	Status     string       `json:"status"`
-	Identifier Identifier   `json:"identifier"`
-	Challenges []*Challenge `json:"challenges"`
-	Expires    string       `json:"expires"`
+	Status     string      `json:"status"`
+	Identifier Identifier  `json:"identifier"`
+	Challenges []Challenge `json:"challenges"`
+	Expires    string      `json:"expires"`
 	// Wildcard is a Let's Encrypt specific Authorization field that indicates the
 	// authorization was created as a result of an order containing a name with
 	// a `*.`wildcard prefix. This will help convey to users that an
